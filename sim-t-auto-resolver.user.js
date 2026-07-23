@@ -4833,6 +4833,16 @@ function initClosingCodesCascade(panel) {
 
                 </div>
 
+                <!-- Photo Notes (shown when LOTO=Yes + Photo=No) -->
+
+                <div id="qcti-photo-notes-row" style="display:none;">
+
+                    <label style="font-size:12px; font-weight:600; color:#475569; text-transform:uppercase; letter-spacing:0.5px;">Why no photo? (required for WO close)</label>
+
+                    <input type="text" id="qcti-photo-notes" placeholder="e.g., No camera available, area inaccessible, photo not applicable" style="width:100%; margin-top:6px; padding:10px; border:1px solid #d1d5db; border-radius:8px; font-size:14px; box-sizing:border-box;">
+
+                </div>
+
                 <!-- Hours Row -->
 
                 <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
@@ -4965,6 +4975,24 @@ function initClosingCodesCascade(panel) {
 
         });
 
+        // LOTO + Photo conditional notes (v1.35.0)
+
+        function updatePhotoNotesVisibility() {
+
+            const lotoYes = panel.querySelector('input[name="qcti-loto"][value="yes"]')?.checked;
+
+            const photoNo = panel.querySelector('input[name="qcti-photo"][value="no"]')?.checked;
+
+            const notesRow = panel.querySelector('#qcti-photo-notes-row');
+
+            if (notesRow) notesRow.style.display = (lotoYes && photoNo) ? 'block' : 'none';
+
+        }
+
+        panel.querySelectorAll('input[name="qcti-loto"], input[name="qcti-photo"]').forEach(r => r.addEventListener('change', updatePhotoNotesVisibility));
+
+        updatePhotoNotesVisibility(); // initial state (for presets/templates that set loto=yes)
+
         // Add part button
 
         panel.querySelector('#qcti-add-part').addEventListener('click', () => addPartRow(panel));
@@ -5064,6 +5092,24 @@ function initClosingCodesCascade(panel) {
 
         }
 
+        // Validate photo notes when LOTO=Yes + Photo=No (v1.35.0)
+
+        const lotoVal = panel.querySelector('input[name="qcti-loto"]:checked')?.value || 'no';
+
+        const photoVal = panel.querySelector('input[name="qcti-photo"]:checked')?.value || 'no';
+
+        const photoNotesVal = panel.querySelector('#qcti-photo-notes')?.value?.trim() || '';
+
+        if (lotoVal === 'yes' && photoVal === 'no' && !photoNotesVal) {
+
+            showToast('❌ Photo notes required — explain why no photo was uploaded', 'error');
+
+            panel.querySelector('#qcti-photo-notes')?.focus();
+
+            return null;
+
+        }
+
         const data = {
 
             comment,
@@ -5081,6 +5127,8 @@ function initClosingCodesCascade(panel) {
             loto: panel.querySelector('input[name="qcti-loto"]:checked')?.value || 'no',
 
             photo: panel.querySelector('input[name="qcti-photo"]:checked')?.value || 'no',
+
+            photoNotes: panel.querySelector('#qcti-photo-notes')?.value?.trim() || '',
 
             hoursType: panel.querySelector('input[name="qcti-hours-type"]:checked')?.value || 'N',
 
@@ -7507,6 +7555,72 @@ function initClosingCodesCascade(panel) {
             const changed = checklistSetRow(boxes, wantYes);
 
             log('Checklist: row ' + n + ' (' + boxes.length + ' boxes) → ' + (wantYes ? 'Yes' : 'No') + (changed ? '' : ' (already set)'));
+
+        }
+
+        // v1.35.0: Write photo notes to the Photo row (index 1) Notes field
+
+        if (data.photoNotes && data.loto === 'yes' && data.photo === 'no') {
+
+            const photoRowIdx = 1; // Seq 20 = Photo question = index 1
+
+            const photoRecord = store.getAt(photoRowIdx);
+
+            if (photoRecord) {
+
+                let photoRowEl = null;
+
+                try { photoRowEl = (view.getRow ? view.getRow(photoRowIdx) : null) || (view.getNode ? view.getNode(photoRecord) : null); } catch (e) { photoRowEl = null; }
+
+                if (photoRowEl) {
+
+                    // APM Master pattern: notes field = input[data-componentid^="textfield"][maxlength="4000"]
+
+                    const notesInput = photoRowEl.querySelector('input[data-componentid^="textfield"][maxlength="4000"]');
+
+                    if (notesInput) {
+
+                        const cmpId = notesInput.getAttribute('data-componentid');
+
+                        const cmp = cmpId && Ext.getCmp ? Ext.getCmp(cmpId) : null;
+
+                        if (cmp && typeof cmp.setValue === 'function') {
+
+                            if (cmp.readOnly && typeof cmp.setReadOnly === 'function') cmp.setReadOnly(false);
+
+                            cmp.setValue(data.photoNotes);
+
+                            if (typeof cmp.fireEvent === 'function') { cmp.fireEvent('change', cmp, data.photoNotes); cmp.fireEvent('blur', cmp); }
+
+                            log('Checklist: Photo row notes set to: ' + data.photoNotes);
+
+                        } else {
+
+                            // DOM fallback
+
+                            notesInput.focus();
+
+                            notesInput.value = data.photoNotes;
+
+                            notesInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+                            notesInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+                            notesInput.blur();
+
+                            log('Checklist: Photo row notes set (DOM fallback): ' + data.photoNotes);
+
+                        }
+
+                    } else {
+
+                        warn('Checklist: Photo row notes input not found — notes not written');
+
+                    }
+
+                }
+
+            }
 
         }
 
