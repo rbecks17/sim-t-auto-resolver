@@ -1,10 +1,12 @@
 // ==UserScript==
 
+// @last-edited  2026-07-23 13:33 BST
+
 // @name         SIM-T Auto Resolver
 
 // @namespace    https://t.corp.amazon.com/
 
-// @version      1.33.0
+// @version      1.35.0
 
 // @description  Unified WO resolver — Quick Resolve (one-click template), Custom Resolve (popup form) and Jam Resolve (5W jam prompt). Consolidated: fully absorbs the former standalone SIM-T Jam Resolver (retired 2026-07-13). Handles SIM-T comment posting + full APM WO closure workflow.
 
@@ -754,11 +756,11 @@
 
         // ─── TIER 1: FORMULA/HARDCODED (highest confidence) ─────────────────
 
-        // 1a. Tape/VAT machine (no serial) → WAT.1
+        // 1a. Tape/WAT machine → WAT system (red-tag items; generic detection regardless of serial)
 
-        if (/\b(tape\s*machine|vat\s*tape|vat\b|\bwat\b)/i.test(text) && !/\b5EMSBL\d+\b/i.test(text)) {
+        if (/\b(tape\s*machine|vat\s*tape|wet\s*tape|vat\b|\bwat\b)/i.test(text)) {
 
-            addResult('WAT.1', '1', 'P', 'Position', 'tape/VAT keyword', 0.95);
+            addResult('WAT.1', '1', 'P', 'Position', 'tape/WAT keyword', 0.95);
 
         }
 
@@ -914,9 +916,9 @@
 
         }
 
-        // 1g. Pod issue + paKivaA0{N} → AR.ZONE.{N}.A.PODS.1
+        // 1g. Pod + paKivaA0{N} → AR.ZONE.{N}.A.PODS.1
 
-        if (/\bpod\b/i.test(text) && /\b(infestation|infested|isolat|damage)\b/i.test(text)) {
+        if (/\bpod\b/i.test(text)) {
 
             const podZone = text.match(/paKivaA0([234])/i);
 
@@ -928,7 +930,46 @@
 
         }
 
-        // 1h. SPP {N} → SMARTPAC.PPR.{N-810} — show dropdown of sub-positions
+        // 1h. Drive serial (6-7 digit) → BOT.HDU.* asset lookup
+
+        {
+            const drivePattern = /\b(\d{6,7})\b/g;
+            const driveKeyword = /\b(drive|HDU|H[- ]?drive)\b/i.test(text);
+            if (driveKeyword) {
+                while ((m = drivePattern.exec(text)) !== null) {
+                    const serial = m[1];
+                    const hduMatch = ASSETS_DATA.find(a => a[0].startsWith('BOT.HDU.') && a[1] === serial);
+                    if (hduMatch) addResult(hduMatch[0], hduMatch[1], 'A', 'Asset', 'Drive serial', 0.95, hduMatch[2]);
+                }
+            }
+        }
+
+        // 1i. E-Stop / Floor Down + zone → specific PSC asset or system fallback
+
+        if (/\b(e[- ]?stop|floor[\s-]?down|SBRS|faulted)\b/i.test(text)) {
+            const pscZone = text.match(/paKivaA0([234])/i) || text.match(/\bP([234])\b/);
+            if (pscZone) {
+                const zone = pscZone[1];
+                // Try to find a specific numbered PSC from a 4-digit number in text
+                const pscNumPattern = /\b(\d{4})\b/g;
+                let foundSpecific = false;
+                let pscM;
+                while ((pscM = pscNumPattern.exec(text)) !== null) {
+                    const pscNum = pscM[1];
+                    const pscAsset = ASSETS_DATA.find(a => a[0] === 'AR.ZONE.' + zone + '.FSS.PSC.' + pscNum);
+                    if (pscAsset) {
+                        addResult(pscAsset[0], pscAsset[1], 'A', 'Asset', 'PSC + zone + ID', 0.95, pscAsset[2]);
+                        foundSpecific = true;
+                    }
+                }
+                // Fallback: generic zone PSC system
+                if (!foundSpecific) {
+                    addResult('AR.ZONE.' + zone + '.FSS.PSC', 'PSC', 'S', 'System', 'Floor E-Stop + zone', 0.85);
+                }
+            }
+        }
+
+        // 1j. SPP {N} → SMARTPAC.PPR.{N-810} — show dropdown of sub-positions
 
         // Lookbehind allows leading digit (SIM-T priority badge glues "4" to title: "4SPP 815...")
         // Optional filler word handles "SPP machine 815" phrasing from operators
@@ -1448,7 +1489,8 @@
 
             ['baler', 'BALER'], ['compressor', 'COMPR'], ['compactor', 'CMPCTR'],
 
-            ['hvac', 'HVAC'], ['lifts', 'LIFTS'], ['printer', 'PRTR'],
+            ['hvac', 'HVAC'], ['lifts', 'LIFTS'], ['printer', 'PRTR'], ['banding', 'WRP.BAND'],
+            ['bander', 'WRP.BAND'], ['band machine', 'WRP.BAND'], ['ergopack', 'WRP.BAND'],
 
             ['scales', 'SCALES'], ['water', 'WTR'], ['lights', 'LIGHT'], ['fire', 'FIRE']
 
@@ -1478,7 +1520,41 @@
 
             });
 
+            // Also search ASSETS_DATA (e.g. WRP.BAND banding machines live there)
+            ASSETS_DATA.filter(function (a) {
+                return a[0] === nlPrefix || a[0].indexOf(nlPrefix + '.') === 0;
+            }).forEach(function (a) {
+                addResult(a[0], a[1], 'A', 'Asset', nlKw + ' (asset)', 0.6, a[2]);
+            });
+
         });
+
+        // 2i-2. Banding machine serial number detection: match serial patterns like
+        //       "0222FLR/51308", "0419FLR/9061", "1115D/3918", "51308", "9061" etc.
+        if (/\b(band|bander|banding|ergopack)\b/i.test(text)) {
+            var bandSerialPattern = /\b(\d{3,4}[A-Z]*\/\d{4,5})\b/gi;
+            while ((m = bandSerialPattern.exec(text)) !== null) {
+                var bandSerial = m[1];
+                var bandMatch = ASSETS_DATA.find(function (a) {
+                    return a[0].indexOf(bandSerial) !== -1;
+                });
+                if (bandMatch) addResult(bandMatch[0], bandMatch[1], 'A', 'Asset', 'banding serial', 0.9, bandMatch[2]);
+            }
+        }
+
+        // 2i-3. Intralox/Introlox (OEM keyword) → all INX.* equipment as picker.
+        //       Optionally narrow to SLAM.NN.DVT1 if ticket also mentions a SLAM number.
+        if (/\b(intr[ao]lox)\b/i.test(text)) {
+            var inxHits = POSITIONS_DATA.filter(function (p) {
+                return p[3] && p[3].indexOf('INX.') === 0;
+            });
+            var slamNarrow = text.match(/\bslam\s*0?(\d{1,2})\b/i);
+            if (slamNarrow) {
+                var slamDesig = 'SLAM.' + slamNarrow[1].padStart(2, '0') + '.DVT1';
+                inxHits = inxHits.filter(function (p) { return p[0] === slamDesig; });
+            }
+            inxHits.forEach(function (p) { addResult(p[0], p[1], 'P', 'Position', 'Intralox (OEM)', 0.75, p[2]); });
+        }
 
         // 2j. Phantom-value concepts resolved to their REAL homes (Q5 audit, 2026-07).
 
@@ -1686,6 +1762,101 @@
 
                 .slice(0, 10).forEach(function (x) { addResult(x[0], x[1], 'P', 'Position', 'gripper (SmartPac)', 0.75, x[2]); });
 
+        }
+
+        // ─── 2l. EXTENDABLE CONVEYORS: BOOM + FLEXI (v1.34.0) ──────────────────────
+
+        // BOOM CONVEYORS — Caljan booms at IB/OB docks (positions in POSITIONS_DATA).
+        //   "boom 102" → EXTEND.BOOM.109758 (IB 102)
+        //   "boom 103" → EXTEND.BOOM.109757 (IB 103)
+        //   "boom 104" → EXTEND.BOOM.109754 (IB 104)
+        //   "boom 211" → EXTEND.BOOM.218973 (OB 211)
+        //   bare "boom" → show all 4 boom positions as picker
+        if (/\bboom\b/i.test(text)) {
+            var boomMap = {
+                '102': 'EXTEND.BOOM.109758',
+                '103': 'EXTEND.BOOM.109757',
+                '104': 'EXTEND.BOOM.109754',
+                '211': 'EXTEND.BOOM.218973'
+            };
+            var boomNumMatch = text.match(/\bboom\s*(\d{2,3})\b/i);
+            if (boomNumMatch && boomMap[boomNumMatch[1]]) {
+                var bDesig = boomMap[boomNumMatch[1]];
+                var bRow = POSITIONS_DATA.find(function (x) { return x[0] === bDesig; });
+                if (bRow) {
+                    addResult(bRow[0], bRow[1], 'P', 'Position', 'boom ' + boomNumMatch[1], 0.9, bRow[2]);
+                }
+            } else {
+                // Bare "boom" — show all 4 boom positions
+                POSITIONS_DATA.filter(function (x) { return x[0].indexOf('EXTEND.BOOM.') === 0; })
+                    .forEach(function (x) { addResult(x[0], x[1], 'P', 'Position', 'boom keyword', 0.75, x[2]); });
+            }
+        }
+
+        // FLEXI CONVEYORS — "flexi 3" → EXTEND.FLEXI.03 asset; bare "flexi" → all 9 assets as picker.
+        if (/\bflexi\b|\bflexible\s*conveyor\b|\bextendable\s*conveyor\b/i.test(text)) {
+            var flexiNumMatch = text.match(/\bflexi\s*(\d{1,2})\b/i);
+            if (flexiNumMatch) {
+                var fNum = flexiNumMatch[1].padStart(2, '0');
+                var fDesig = 'EXTEND.FLEXI.' + fNum;
+                var fRow = ASSETS_DATA.find(function (x) { return x[0] === fDesig; });
+                if (fRow) {
+                    addResult(fRow[0], fRow[1], 'A', 'Asset', 'flexi ' + flexiNumMatch[1], 0.85, fRow[2]);
+                }
+            } else {
+                // Bare "flexi" — show all 9 flexi assets as picker
+                ASSETS_DATA.filter(function (x) { return x[0].indexOf('EXTEND.FLEXI.') === 0; })
+                    .forEach(function (x) { addResult(x[0], x[1], 'A', 'Asset', 'flexi conveyor', 0.65, x[2]); });
+            }
+        }
+
+        // ─── 2m. BUILDING / AREA KEYWORDS (v1.34.0) ─────────────────────────────────
+        //     Only items with bookable positions/assets in APM.
+        //     Toilets, water dispensers, emergency doors, mezzanine.
+
+        // TOILETS — search POSITIONS_DATA for BLDG.TOIL.* positions
+        //   Suffixes: .F (Female), .M (Male), .D1/.D2 (Disabled), .U1/.U2 (Unisex)
+        if (/\btoilet|bathroom|washroom|\bloo\b/i.test(text)) {
+            // Try to narrow by gender/type from ticket text
+            var toilGender = null;
+            if (/\bfemale\b|\bladies\b|\bwomens?\b/i.test(text)) toilGender = '.F';
+            else if (/\bmale\b|\bmen'?s?\b|\bgents?\b/i.test(text)) toilGender = '.M';
+            else if (/\bdisabled\b|\baccessib/i.test(text)) toilGender = '.D';
+            else if (/\bunisex\b/i.test(text)) toilGender = '.U';
+
+            // Try to narrow by toilet number
+            var toilNumMatch = text.match(/\btoilet\s*(\d{1,2})\b/i);
+
+            var toilPositions = POSITIONS_DATA.filter(function (x) { return x[0].indexOf('BLDG.TOIL.') === 0; });
+            if (toilNumMatch) {
+                var tNum = toilNumMatch[1].padStart(2, '0');
+                toilPositions = toilPositions.filter(function (x) { return x[0].indexOf('BLDG.TOIL.' + tNum) === 0; });
+            }
+            if (toilGender) {
+                var gFiltered = toilPositions.filter(function (x) { return x[0].indexOf(toilGender) !== -1; });
+                if (gFiltered.length > 0) toilPositions = gFiltered;
+            }
+            toilPositions.slice(0, 10).forEach(function (x) {
+                addResult(x[0], x[1], 'P', 'Position', 'toilet keyword', 0.8, x[2]);
+            });
+        }
+
+        // WATER DISPENSERS → BLDG.DWDISP.01 (bookable position)
+        if (/\bwater\s*dispenser\b|\bdrinking\s*water\b|\bwater\s*cooler\b|\bwater\s*fountain\b/i.test(text)) {
+            var dwRow = POSITIONS_DATA.find(function (x) { return x[0] === 'BLDG.DWDISP.01'; });
+            if (dwRow) addResult(dwRow[0], dwRow[1], 'P', 'Position', 'water dispenser keyword', 0.8, dwRow[2]);
+        }
+
+        // EMERGENCY DOORS → BLDG.EMERDOOR.1 (bookable position)
+        if (/\bemergency\s*(exit|door)\b|\bfire\s*(exit|door)\b|\bemergency\s*exit\b/i.test(text)) {
+            var emRow = POSITIONS_DATA.find(function (x) { return x[0] === 'BLDG.EMERDOOR.1'; });
+            if (emRow) addResult(emRow[0], emRow[1], 'P', 'Position', 'emergency door keyword', 0.8, emRow[2]);
+        }
+
+        // MEZZANINE → BLDG.MEZZANINE.1 (bookable position)
+        if (/\bmezzanine\b|\bmezz\b/i.test(text)) {
+            var mzRow = POSITIONS_DATA.find(function (x) { return x[0] === 'BLDG.MEZZANINE.1'; });
+            if (mzRow) addResult(mzRow[0], mzRow[1], 'P', 'Position', 'mezzanine keyword', 0.75, mzRow[2]);
         }
 
         // 5. Keyword + number patterns (e.g., "slam 8", "afe 3", "conveyor 01")
@@ -4980,7 +5151,7 @@ function initClosingCodesCascade(panel) {
 
                     log('Navigated to Communication tab');
 
-            await delay(1200); // Wait for tab to load (SPA nav — fast)
+            await delay(400); // SPA nav — sub-second render
 
                 } else {
 
@@ -4994,7 +5165,7 @@ function initClosingCodesCascade(panel) {
 
                             tab.click();
 
-                        await delay(1200);
+                        await delay(400); // SPA nav render
 
                             break;
 
@@ -5114,7 +5285,7 @@ function initClosingCodesCascade(panel) {
 
         log('Comment entered into textarea');
 
-        await delay(500);
+        await delay(150); // React re-render after input event
 
         // Click the Post button — SIM-T uses Cloudscape/AWSUI components
 
@@ -5162,7 +5333,7 @@ function initClosingCodesCascade(panel) {
 
         if (posted) {
 
-            await delay(2000);
+            await delay(600); // POST completes fast — just wait for DOM update
 
             showToast('✅ Comment posted to SIM-T', 'success');
 
@@ -5200,7 +5371,7 @@ function initClosingCodesCascade(panel) {
 
         // Wait and retry (page might still be rendering after comment post)
 
-        await delay(800);
+        await delay(400); // retry after short render wait
 
         link = document.querySelector('a[href*="hxgnsmartcloud.com"][href*="workordernum"]');
 
@@ -6023,7 +6194,7 @@ function initClosingCodesCascade(panel) {
 
                 log('APM: JAM auto-fill button clicked');
 
-                await delay(600); // let the native auto-fill populate (near-instant — just needs a tick)
+                await waitForQuiet(Ext, 150, 3000); // auto-fill triggers Ajax — resolve when idle
 
             } else {
 
@@ -6041,7 +6212,7 @@ function initClosingCodesCascade(panel) {
 
             await setBlurbComboByLabel(found.ext, dialogWin, 'parts', partsVal);
 
-            await delay(400);
+            await waitForQuiet(Ext, 100, 2000); // combos settled
 
         } else {
 
@@ -6053,7 +6224,7 @@ function initClosingCodesCascade(panel) {
 
             await setBlurbComboByLabel(found.ext, dialogWin, 'parts', partsVal);
 
-            await delay(400);
+            await waitForQuiet(Ext, 100, 2000); // combos settled
 
         }
 
@@ -8073,7 +8244,7 @@ function initClosingCodesCascade(panel) {
 
         // Wait for form to appear
 
-        await delay(2000);
+        await waitForQuiet(Ext, 300, 5000); // wait for Book Labor form to render
 
         // Find the form inside Book Labor tab
 
@@ -8127,7 +8298,7 @@ function initClosingCodesCascade(panel) {
 
             log('Book Labor: Activity set to ' + actValue);
 
-            await delay(500);
+            await waitForQuiet(Ext, 100, 2000);
 
         }
 
@@ -8153,7 +8324,7 @@ function initClosingCodesCascade(panel) {
 
             log('Book Labor: Employee set to ' + login);
 
-            await delay(500);
+            await waitForQuiet(Ext, 100, 2000);
 
         }
 
@@ -8177,7 +8348,7 @@ function initClosingCodesCascade(panel) {
 
             log('Book Labor: Date set to ' + dateStr);
 
-            await delay(500);
+            await waitForQuiet(Ext, 100, 2000);
 
         }
 
@@ -8197,7 +8368,7 @@ function initClosingCodesCascade(panel) {
 
             log('Book Labor: Hours set to ' + hrsVal);
 
-            await delay(500);
+            await waitForQuiet(Ext, 100, 2000);
 
         }
 
@@ -8219,7 +8390,7 @@ function initClosingCodesCascade(panel) {
 
             log('Book Labor: Type set to ' + typeVal);
 
-            await delay(500);
+            await waitForQuiet(Ext, 100, 2000);
 
         }
 
