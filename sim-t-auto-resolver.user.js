@@ -6,9 +6,9 @@
 
 // @namespace    https://t.corp.amazon.com/
 
-// @version      1.35.5
+// @version      1.35.7
 
-// @description  Unified WO resolver — Quick Resolve (one-click template), Custom Resolve (popup form) and Jam Resolve (5W jam prompt). Consolidated: fully absorbs the former standalone SIM-T Jam Resolver (retired 2026-07-13). Handles SIM-T comment posting + full APM WO closure workflow. v1.35.5: fix equipment LOV validation (validateLOV flag).
+// @description  Unified WO resolver — Quick Resolve (one-click template), Custom Resolve (popup form) and Jam Resolve (5W jam prompt). Consolidated: fully absorbs the former standalone SIM-T Jam Resolver (retired 2026-07-13). Handles SIM-T comment posting + full APM WO closure workflow. v1.35.7: fix FSRI detection (permissive separator regex, zero-padded nums, FSI prefix support) + remove equipment→save delay.
 
 // @updateURL    https://raw.githubusercontent.com/rbecks17/sim-t-auto-resolver/main/sim-t-auto-resolver.meta.js
 
@@ -542,10 +542,13 @@
     const FSRI_MAP = {
 
         '13': 'FSI.01',
+        '1': 'FSI.01',
 
         '14': 'FSI.02',
+        '2': 'FSI.02',
 
-        '15': 'FSI.03'
+        '15': 'FSI.03',
+        '3': 'FSI.03'
 
     };
 
@@ -1143,13 +1146,13 @@
 
         }
 
-        // 1. FSRI pattern: "FSRI 13", "FSRI-14", "FSRI15"
+        // 1. FSRI/FSI pattern: "FSRI 13", "FSRI-15", "FSRI #15", "FSI 03", "FSI.03"
 
-        const fsriPattern = /\bFSRI[\s\-]*(1[345])\b/gi;
+        const fsriPattern = /\b(?:FSRI|FSI)[\s\-#._:]*(\d{1,2})\b/gi;
 
         while ((m = fsriPattern.exec(text)) !== null) {
 
-            const num = m[1];
+            const num = m[1].replace(/^0+/, '') || m[1];  // strip leading zeros: "03" → "3"
 
             const mapped = FSRI_MAP[num];
 
@@ -5617,9 +5620,9 @@ function initClosingCodesCascade(panel) {
 
     // {saved, success, timedOut}. Faster + more reliable than a quiet-period poll.
 
-    function waitForSave(form, maxMs) {
+    function waitForSave(form, maxMs, quietMs) {
 
-        maxMs = maxMs || 5000;
+        maxMs = maxMs || 5000; quietMs = quietMs || 1000;
 
         if (!form || typeof form.on !== 'function') {
 
@@ -5649,7 +5652,6 @@ function initClosingCodesCascade(panel) {
 
             // APM Master fallback: if aftersaverecord doesn't fire, detect via Ajax-quiet
             // (zo pattern: wait until no Ajax for quietMs, then consider save done)
-            var quietMs = 1000;
             var ajaxFallbackStarted = false;
 
             function tryAjaxFallback() {
@@ -5672,8 +5674,8 @@ function initClosingCodesCascade(panel) {
                 setTimeout(function() { clearInterval(interval); }, maxMs);
             }
 
-            // Give the event 800ms head start, then start Ajax-quiet fallback
-            setTimeout(tryAjaxFallback, 800);
+            // Give the event 300ms head start, then start Ajax-quiet fallback
+            setTimeout(tryAjaxFallback, 300);
 
             var timer = setTimeout(function(){ finish({saved:false, success:null, timedOut:true}); }, maxMs);
 
@@ -5965,8 +5967,6 @@ function initClosingCodesCascade(panel) {
 
             log('APM: Equipment set to', data.equipment);
 
-            await apmWaitAjax(Ext, 2000);  // equipment validation LOV lookup — typically 500-1000ms
-
             // ─── STEP 3b: Shift (auto-detected from rotation) ────────────
 
             const currentShift = getCurrentShift();
@@ -5989,7 +5989,7 @@ function initClosingCodesCascade(panel) {
 
             // Event-driven: resolve the instant the save commits (APM Master bA)
 
-            var saveRes1 = await waitForSave(form, 5000);  // normal save commits in 1-3s
+            var saveRes1 = await waitForSave(form, 4000, 500);  // 4s max, 500ms quiet (first save is fast)
 
             log('APM: First save ' + (saveRes1.saved ? 'committed' : 'timed out') + (saveRes1.success === false ? ' (server reported failure)' : ''));
 
