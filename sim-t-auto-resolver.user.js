@@ -6,7 +6,7 @@
 
 // @namespace    https://t.corp.amazon.com/
 
-// @version      1.35.2
+// @version      1.35.3
 
 // @description  Unified WO resolver — Quick Resolve (one-click template), Custom Resolve (popup form) and Jam Resolve (5W jam prompt). Consolidated: fully absorbs the former standalone SIM-T Jam Resolver (retired 2026-07-13). Handles SIM-T comment posting + full APM WO closure workflow.
 
@@ -5967,7 +5967,6 @@ function initClosingCodesCascade(panel) {
 
             await apmDismissPopups(Ext);  // clear any 'confirm save' EAM popups
 
-            await apmWaitAjax(Ext, 1500);  // don't block for closing codes — Steps 5-6 don't need them
 
             // Abort ONLY on an explicit server rejection — a timeout may just mean the
 
@@ -5999,7 +5998,6 @@ function initClosingCodesCascade(panel) {
 
             log('APM: Assigned To set to', login);
 
-            await waitForQuiet(Ext, 200, 3000);
 
             // ─── STEP 6: Closing Comments ──────────────────────────────
 
@@ -6157,21 +6155,28 @@ function initClosingCodesCascade(panel) {
 
             // Event-driven: resolve the instant the save commits (APM Master bA)
 
-        const saveForm = (freshResult && freshResult.form) || form;
-        var saveRes2 = await waitForSave(saveForm, 3000);  // reactive WOs show blurb INSTEAD of committing — don't block 12s
+            // Race: waitForSave vs blurb dialog appearing (reactive WOs show blurb INSTEAD of committing)
+            const saveForm = (freshResult && freshResult.form) || form;
+            var saveRes2 = await Promise.race([
+                waitForSave(saveForm, 5000),
+                (async () => {
+                    for (let i = 0; i < 50; i++) {
+                        if (findClosingBlurbWindow()) return { saved: false, blurbDetected: true };
+                        await delay(100);
+                    }
+                    return { saved: false, blurbDetected: false };
+                })()
+            ]);
 
-            log('APM: Final save ' + (saveRes2.saved ? 'committed' : 'timed out') + (saveRes2.success === false ? ' (server reported failure)' : ''));
-
-            await apmDismissPopups(Ext);  // clear any confirmation popups before closing blurb
-
-            if (saveRes2.success === false) {
-
-                error('APM: Final save rejected — WO may not be Completed.');
-
-                showToast('⚠️ APM rejected the final save — the WO may NOT be completed. Check the WO manually.', 'error', 20000);
-
-                // Do not return: still attempt the closing blurb in case the reject was the blurb prompt itself.
-
+            if (saveRes2.blurbDetected) {
+                log('APM: Blurb dialog detected during save wait — proceeding to fill');
+            } else {
+                log('APM: Final save ' + (saveRes2.saved ? 'committed' : 'timed out') + (saveRes2.success === false ? ' (server reported failure)' : ''));
+                await apmDismissPopups(Ext);
+                if (saveRes2.success === false) {
+                    error('APM: Final save rejected — WO may not be Completed.');
+                    showToast('⚠️ APM rejected the final save — the WO may NOT be completed. Check the WO manually.', 'error', 20000);
+                }
             }
 
             // ─── STEP 14 (reactive): WO Closing Blurb dialog (5W1H + 5 Whys) ──
@@ -6248,7 +6253,7 @@ function initClosingCodesCascade(panel) {
 
         showToast('⏳ Filling closing blurb (5W1H + 5 Whys)...', 'info');
 
-        await delay(80);
+        // no pad delay — fields are already rendered when dialog is detected
 
         // ── FIELD DISCOVERY DUMP (logs every input's name + placeholder) ──
 
@@ -6316,7 +6321,7 @@ function initClosingCodesCascade(panel) {
 
             await setBlurbComboByLabel(found.ext, dialogWin, 'parts', partsVal);
 
-            await waitForQuiet(Ext, 80, 1000); // combos settled
+            await waitForQuiet(Ext, 50, 400); // combos settled — fast
 
         } else {
 
@@ -6328,7 +6333,7 @@ function initClosingCodesCascade(panel) {
 
             await setBlurbComboByLabel(found.ext, dialogWin, 'parts', partsVal);
 
-            await waitForQuiet(Ext, 80, 1000); // combos settled
+            await waitForQuiet(Ext, 50, 400); // combos settled — fast
 
         }
 
@@ -6342,7 +6347,7 @@ function initClosingCodesCascade(panel) {
 
             log('APM: OK clicked on closing blurb dialog');
 
-            await apmWaitAjax(Ext, 2000);
+            await apmWaitAjax(Ext, 800);  // just enough for OK submit to fire
 
         } else {
 
