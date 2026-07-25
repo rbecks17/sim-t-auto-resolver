@@ -6,9 +6,9 @@
 
 // @namespace    https://t.corp.amazon.com/
 
-// @version      1.35.4
+// @version      1.35.5
 
-// @description  Unified WO resolver — Quick Resolve (one-click template), Custom Resolve (popup form) and Jam Resolve (5W jam prompt). Consolidated: fully absorbs the former standalone SIM-T Jam Resolver (retired 2026-07-13). Handles SIM-T comment posting + full APM WO closure workflow.
+// @description  Unified WO resolver — Quick Resolve (one-click template), Custom Resolve (popup form) and Jam Resolve (5W jam prompt). Consolidated: fully absorbs the former standalone SIM-T Jam Resolver (retired 2026-07-13). Handles SIM-T comment posting + full APM WO closure workflow. v1.35.5: fix equipment LOV validation (validateLOV flag).
 
 // @updateURL    https://raw.githubusercontent.com/rbecks17/sim-t-auto-resolver/main/sim-t-auto-resolver.meta.js
 
