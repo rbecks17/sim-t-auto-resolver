@@ -5967,7 +5967,7 @@ function initClosingCodesCascade(panel) {
 
             await apmDismissPopups(Ext);  // clear any 'confirm save' EAM popups
 
-            await apmWaitAjax(Ext, 5000);
+            await apmWaitAjax(Ext, 1500);  // don't block for closing codes — Steps 5-6 don't need them
 
             // Abort ONLY on an explicit server rejection — a timeout may just mean the
 
@@ -6012,6 +6012,8 @@ function initClosingCodesCascade(panel) {
             // ─── STEP 7: Closing Codes (problem/failure/cause) ─────────
 
             if (data.problemCode || data.failureCode || data.causeCode) {
+
+                await apmWaitAjax(Ext, 3000);  // ensure closing codes loaded from Save #1
 
                 showToast('⏳ [7/13] Setting closing codes...', 'info');
 
@@ -6156,7 +6158,7 @@ function initClosingCodesCascade(panel) {
             // Event-driven: resolve the instant the save commits (APM Master bA)
 
         const saveForm = (freshResult && freshResult.form) || form;
-        var saveRes2 = await waitForSave(saveForm, 12000);
+        var saveRes2 = await waitForSave(saveForm, 3000);  // reactive WOs show blurb INSTEAD of committing — don't block 12s
 
             log('APM: Final save ' + (saveRes2.saved ? 'committed' : 'timed out') + (saveRes2.success === false ? ' (server reported failure)' : ''));
 
