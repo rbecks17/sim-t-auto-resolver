@@ -6,7 +6,7 @@
 
 // @namespace    https://t.corp.amazon.com/
 
-// @version      1.35.3
+// @version      1.35.4
 
 // @description  Unified WO resolver — Quick Resolve (one-click template), Custom Resolve (popup form) and Jam Resolve (5W jam prompt). Consolidated: fully absorbs the former standalone SIM-T Jam Resolver (retired 2026-07-13). Handles SIM-T comment posting + full APM WO closure workflow.
 
@@ -5619,7 +5619,7 @@ function initClosingCodesCascade(panel) {
 
     function waitForSave(form, maxMs) {
 
-        maxMs = maxMs || 12000;
+        maxMs = maxMs || 5000;
 
         if (!form || typeof form.on !== 'function') {
 
@@ -5646,6 +5646,34 @@ function initClosingCodesCascade(panel) {
             function onSave(f, success) { finish({saved:true, success: success !== false, timedOut:false}); }
 
             form.on('aftersaverecord', onSave);
+
+            // APM Master fallback: if aftersaverecord doesn't fire, detect via Ajax-quiet
+            // (zo pattern: wait until no Ajax for quietMs, then consider save done)
+            var quietMs = 1000;
+            var ajaxFallbackStarted = false;
+
+            function tryAjaxFallback() {
+                if (done || ajaxFallbackStarted) return;
+                ajaxFallbackStarted = true;
+                var Ext = form.owner?.Ext || (typeof unsafeWindow !== 'undefined' && unsafeWindow.Ext);
+                if (!Ext || !Ext.Ajax) return;
+                // Poll: if Ajax not loading for quietMs, save likely committed
+                var quietStart = null;
+                var interval = setInterval(function() {
+                    if (done) { clearInterval(interval); return; }
+                    if (Ext.Ajax.isLoading()) { quietStart = null; return; }
+                    if (!quietStart) { quietStart = Date.now(); return; }
+                    if (Date.now() - quietStart >= quietMs) {
+                        clearInterval(interval);
+                        finish({saved: true, success: null, timedOut: false, viaAjaxQuiet: true});
+                    }
+                }, 100);
+                // Cleanup on timeout
+                setTimeout(function() { clearInterval(interval); }, maxMs);
+            }
+
+            // Give the event 800ms head start, then start Ajax-quiet fallback
+            setTimeout(tryAjaxFallback, 800);
 
             var timer = setTimeout(function(){ finish({saved:false, success:null, timedOut:true}); }, maxMs);
 
@@ -5917,27 +5945,27 @@ function initClosingCodesCascade(panel) {
 
             log('APM: Status set to Open (R)');
 
-            await apmWaitAjax(Ext, 3000);  // status change may trigger dependent-field Ajax
+            await apmWaitAjax(Ext, 2000);  // status change unlocks dependent fields — event-driven, 2s ceiling
 
             // ─── STEP 2: WO Execution ──────────────────────────────────
 
             showToast('⏳ [2/13] Setting WO Execution...', 'info');
 
-            await setLOVField(Ext, form, 'udfchar13', data.woExecution);
+            await setLOVField(Ext, form, 'udfchar13', data.woExecution, { skipStoreLoad: true });
 
             log('APM: WO Execution set to', data.woExecution);
 
-            await apmWaitAjax(Ext, 3000);
+            await apmWaitAjax(Ext, 500);  // UDF text field — no cascade, no validation Ajax
 
             // ─── STEP 3: Equipment ─────────────────────────────────────
 
             showToast('⏳ [3/13] Setting Equipment...', 'info');
 
-            await setLOVField(Ext, form, 'equipment', data.equipment);
+            await setLOVField(Ext, form, 'equipment', data.equipment, { skipStoreLoad: true });
 
             log('APM: Equipment set to', data.equipment);
 
-            await apmWaitAjax(Ext, 5000);  // equipment validation round-trip
+            await apmWaitAjax(Ext, 2000);  // equipment validation LOV lookup — typically 500-1000ms
 
             // ─── STEP 3b: Shift (auto-detected from rotation) ────────────
 
@@ -5961,7 +5989,7 @@ function initClosingCodesCascade(panel) {
 
             // Event-driven: resolve the instant the save commits (APM Master bA)
 
-            var saveRes1 = await waitForSave(form, 15000);
+            var saveRes1 = await waitForSave(form, 5000);  // normal save commits in 1-3s
 
             log('APM: First save ' + (saveRes1.saved ? 'committed' : 'timed out') + (saveRes1.success === false ? ' (server reported failure)' : ''));
 
@@ -5994,7 +6022,7 @@ function initClosingCodesCascade(panel) {
 
             if (login) login = login.toUpperCase();
 
-            await setLOVField(Ext, form, 'assignedto', login);
+            await setLOVField(Ext, form, 'assignedto', login, { skipStoreLoad: true });
 
             log('APM: Assigned To set to', login);
 
@@ -6011,9 +6039,13 @@ function initClosingCodesCascade(panel) {
 
             if (data.problemCode || data.failureCode || data.causeCode) {
 
-                await apmWaitAjax(Ext, 3000);  // ensure closing codes loaded from Save #1
+                // APM Master Ed() pattern: try native setFldValues FIRST (one call, no cascades).
+                // Falls back to sequential setComboField if setFldValues unavailable.
 
                 showToast('⏳ [7/13] Setting closing codes...', 'info');
+
+                await unlockClosingCodeFields(Ext, form);  // APM Master pattern: clear _problemCodeInterval + EAM.Builder unlock
+
 
                 const codeFields = [
 
@@ -6025,11 +6057,46 @@ function initClosingCodesCascade(panel) {
 
                 ];
 
+                // APM Master Ed(): try native batch-set via recordview.setFldValues()
+                const recordView = form.owner || form;
+                let batchSuccess = false;
+                if (typeof recordView.setFldValues === 'function') {
+                    try {
+                        const fldMap = {};
+                        for (const [fn, fv] of codeFields) {
+                            if (fv) fldMap[fn] = fv;
+                        }
+                        if (Object.keys(fldMap).length > 0) {
+                            recordView.setFldValues(fldMap, false);
+                            await apmWaitAjax(Ext, 1500);  // let EAM process the batch
+                            log('Closing codes set via native setFldValues:', JSON.stringify(fldMap));
+                            batchSuccess = true;
+                            // Verify (aa() pattern)
+                            for (const [fn, fv] of codeFields) {
+                                if (!fv) continue;
+                                try {
+                                    var bfld = Ext.ComponentQuery.query('[name="' + fn + '"]', form.owner || form)[0]
+                                             || Ext.ComponentQuery.query('[name="' + fn + '"]')[0];
+                                    if (bfld) {
+                                        var bGot = String(bfld.getValue() || '').trim().toUpperCase();
+                                        if (bGot && bGot !== fv.toUpperCase()) {
+                                            warn('setFldValues: ' + fn + ' value mismatch — wanted "' + fv + '", got "' + bGot + '". Falling back.');
+                                            batchSuccess = false; break;
+                                        }
+                                    }
+                                } catch(e) {}
+                            }
+                        }
+                    } catch (e) {
+                        warn('setFldValues failed, falling back to sequential: ' + e.message);
+                    }
+                }
+
+                // Sequential fallback (our existing approach — needed if setFldValues unavailable)
+                if (!batchSuccess) {
+
                 // Closing codes are equipment-specific combos loaded after SAVE #1.
-
-                // Route through setComboField (An() pattern: store-validate + select) —
-
-                // these are 'lovclosingcodefield' combos so store validation matters.
+                // Route through setComboField (An() pattern: store-validate + select).
 
                 for (const [fieldName, value] of codeFields) {
 
@@ -6047,7 +6114,7 @@ function initClosingCodesCascade(panel) {
 
                     }
 
-                    await apmWaitAjax(Ext, 2500);  // each code may cascade-load the next
+                    await apmWaitAjax(Ext, 800);  // cascade-load: P→F, F→C — typically 200-800ms
 
                     // Read-back verification (APM Master aa()): confirm the value actually took
 
@@ -6077,6 +6144,7 @@ function initClosingCodesCascade(panel) {
 
                 }
 
+                }  // end sequential fallback (!batchSuccess)
             }
 
             log('APM: Closing codes set');
@@ -6855,6 +6923,112 @@ function initClosingCodesCascade(panel) {
 
     // ═══════════════════════════════════════════════════════════════════
 
+    /** Unlock closing code LOV fields — port of APM Master's field-unlock (v14.18.15 L30476-30533).
+     *  Clears APM's _problemCodeInterval that periodically re-locks the field,
+     *  neutralizes the keydown blocker, and marks fields as editable via EAM.Builder. */
+
+    function unlockClosingCodeFields(Ext, form) {
+
+        const win = Ext.global || (form.el && form.el.dom && form.el.dom.ownerDocument.defaultView) || window;
+
+        const codeNames = ['problemcode', 'failurecode', 'causecode'];
+
+        const searchContext = form.owner || form;
+
+        for (const fieldName of codeNames) {
+
+            let fields = Ext.ComponentQuery.query('[name="' + fieldName + '"]', searchContext);
+
+            if (!fields.length) fields = Ext.ComponentQuery.query('[name="' + fieldName + '"]');
+
+            if (!fields.length) continue;
+
+            const field = fields[0];
+
+            if (!field || field.isDestroyed) continue;
+
+            // Unlock field state
+
+            field.editable = true;
+
+            if (typeof field.setEditable === 'function') try { field.setEditable(true); } catch (e) {}
+
+            if (typeof field.setReadOnly === 'function') try { field.setReadOnly(false); } catch (e) {}
+
+            if (fieldName === 'problemcode' && typeof field.setDisabled === 'function') try { field.setDisabled(false); } catch (e) {}
+
+            if (typeof field.setReadOnlyAttr === 'function') try { field.setReadOnlyAttr(false); } catch (e) {}
+
+            // DOM-level unlock
+
+            const dom = field.inputEl && field.inputEl.dom;
+
+            if (dom) {
+
+                if (dom.hasAttribute('readonly')) dom.removeAttribute('readonly');
+
+                if (dom.getAttribute('aria-readonly') === 'true') dom.setAttribute('aria-readonly', 'false');
+
+                if (dom.style && dom.style.cursor === 'pointer') dom.style.cursor = '';
+
+                if (dom.style && dom.style.pointerEvents === 'none') dom.style.pointerEvents = '';
+
+                if (dom.tabIndex < 0) dom.tabIndex = 0;
+
+            }
+
+            // Clear the periodic re-lock interval (APM Master: formPanel._problemCodeInterval)
+
+            if (fieldName === 'problemcode' && field.formPanel && field.formPanel._problemCodeInterval) {
+
+                try { win.clearInterval(field.formPanel._problemCodeInterval); } catch (e) {}
+
+                field.formPanel._problemCodeInterval = null;
+
+                log('APM: Cleared _problemCodeInterval on problemcode field');
+
+            }
+
+            // EAM.Builder field-state unlock
+
+            try {
+
+                const builder = win.EAM && win.EAM.Builder;
+
+                const fp = field.formPanel || form;
+
+                const fieldsAndButtons = fp.getForm && fp.getForm().getFieldsAndButtons && fp.getForm().getFieldsAndButtons();
+
+                if (builder && typeof builder.setFieldState === 'function' && fieldsAndButtons) {
+
+                    builder.setFieldState.call(builder, { [fieldName]: 'optional' }, fieldsAndButtons);
+
+                }
+
+            } catch (e) {}
+
+            // Neutralize keydown blocker on problemcode input
+
+            if (fieldName === 'problemcode' && dom && !dom.__apmKeyBlockerNeutralized) {
+
+                dom.addEventListener('keydown', function(ev) {
+
+                    if (ev.key === 'F9' || ev.keyCode === 120) return;
+
+                    ev.preventDefault = function() {};
+
+                }, true);
+
+                dom.__apmKeyBlockerNeutralized = true;
+
+            }
+
+        }
+
+        log('APM: Closing code fields unlocked (APM Master pattern)');
+
+    }
+
     /** Set a combo/dropdown field (Status, etc.) — uses setValue + fireEvent */
 
     async function setComboField(Ext, form, fieldName, value) {
@@ -6961,7 +7135,7 @@ function initClosingCodesCascade(panel) {
 
      *  Exact pattern from CTI auto-assign script (proven working) */
 
-    async function setLOVField(Ext, form, fieldName, value) {
+    async function setLOVField(Ext, form, fieldName, value, opts) {
 
         const searchContext = form.owner || form;
 
@@ -6981,25 +7155,28 @@ function initClosingCodesCascade(panel) {
 
         if (typeof field.setDisabled === 'function') field.setDisabled(false);
 
+        opts = opts || {};
+
         // Ensure store loaded (APM Master: ensureStoreLoaded)
 
-        if (field.store && field.store.getCount() === 0 && !field.store.isLoading?.()) {
+        if (!opts.skipStoreLoad && field.store && field.store.getCount() === 0 && !field.store.isLoading?.()) {
 
             if (field.doQuery) field.doQuery(field.allQuery || '', true);
 
             else if (field.onTriggerClick) field.onTriggerClick();
 
-            for (let tries = 0; tries < 20; tries++) {
+            for (let tries = 0; tries < 12; tries++) {
 
                 if (field.store.getCount() > 0) break;
 
-                await delay(150);
+                await delay(100);
 
             }
 
         }
 
-        // Try store-based approach first (APM Master: XT → setValue + select + record.set)
+        // Try store-based approach first (APM Master: XT → setValue + select + record.set),
+        // unless skipStoreLoad is set (DOM fallback is faster for server-validated LOVs)
 
         let storeRecord = null;
 
@@ -7037,41 +7214,56 @@ function initClosingCodesCascade(panel) {
 
         } else {
 
-            // DOM fallback (APM Master Yo pattern: setValue + dom.value + input + Tab + blur)
+            // DOM fallback (APM Master Yo pattern with markValidated optimisation)
 
-            field.setValue(value);
+            // Mark pre-validated (APM Master: noLOVOnValidate + lastValidatedValue + validated)
+            // This tells EAM the value is already valid — skips the LOV validation Ajax on blur.
+            if (opts.skipStoreLoad) {
+                field.noLOVOnValidate = true;
+                field.lastValidatedValue = value;
+                field.validated = true;
+            }
+
+            var validateOnChange = field.validateOnChange;
+            if (opts.skipStoreLoad) field.validateOnChange = false;
+
+            try {
+                field.setValue(value);
+            } finally {
+                if (opts.skipStoreLoad) field.validateOnChange = validateOnChange;
+            }
 
             const record = form.getRecord ? form.getRecord() : null;
 
             if (record) record.set(fieldName, value);
 
+            // DOM events (focus → value → input → change → blur)
+            // Skip Tab keydown when markValidated — it triggers LOV validation Ajax
             if (field.inputEl && field.inputEl.dom) {
 
                 const dom = field.inputEl.dom;
 
-                dom.focus();
-
-                dom.value = value;
+                dom.focus(); dom.value = value;
 
                 dom.dispatchEvent(new Event('input', { bubbles: true }));
 
                 dom.dispatchEvent(new Event('change', { bubbles: true }));
 
-                dom.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', keyCode: 9, which: 9, bubbles: true }));
-
+                if (!opts.skipStoreLoad) {
+                    dom.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', keyCode: 9, which: 9, bubbles: true }));
+                }
                 dom.blur();
-
             }
 
             field.fireEvent('change', field, value);
 
             field.fireEvent('blur', field);
 
-            log('LOV "' + fieldName + '" set via DOM fallback');
+            log('LOV "' + fieldName + '" set via DOM fallback' + (opts.skipStoreLoad ? ' (markValidated)' : ''));
 
         }
 
-        if (typeof field.validate === 'function') field.validate();
+        if (!opts.skipStoreLoad && typeof field.validate === 'function') field.validate();
 
     }
 
@@ -7717,7 +7909,7 @@ function initClosingCodesCascade(panel) {
 
                 }
 
-                await waitForQuiet(Ext, 400, 6000);
+                await waitForQuiet(Ext, 200, 3000);
 
                 log('  Store loaded for "' + (field.name || '?') + '": ' + field.store.getCount() + ' records');
 
