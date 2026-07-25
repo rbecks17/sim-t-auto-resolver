@@ -3930,6 +3930,24 @@ function initClosingCodesCascade(panel) {
 
                 </div>
 
+                <!-- Photo -->
+
+                <div id="qcti-qp-photo-section" style="display:none;">
+
+                    <label style="font-size:12px; font-weight:600; color:#475569; text-transform:uppercase; letter-spacing:0.5px;">Photo Uploaded?</label>
+
+                    <div style="display:flex; gap:8px; margin-top:6px;">
+
+                        <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:13px;"><input type="radio" name="qcti-qp-photo" value="yes"> Yes</label>
+
+                        <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:13px;"><input type="radio" name="qcti-qp-photo" value="no" checked> No</label>
+
+                    </div>
+
+                    <input type="text" id="qcti-qp-photo-notes" placeholder="e.g., No camera available, area inaccessible" style="display:none; width:100%; margin-top:8px; padding:10px; border:1px solid #d1d5db; border-radius:8px; font-size:14px; box-sizing:border-box;">
+
+                </div>
+
                 <!-- Parts -->
 
                 <div>
@@ -3988,6 +4006,30 @@ function initClosingCodesCascade(panel) {
 
         });
 
+        // Photo section: show when LOTO=Yes, show notes when Photo=No
+
+        function updateQpPhotoVisibility() {
+
+            const lotoYes = panel.querySelector('input[name="qcti-qp-loto"][value="yes"]')?.checked;
+
+            const photoSection = panel.querySelector('#qcti-qp-photo-section');
+
+            const photoNotes = panel.querySelector('#qcti-qp-photo-notes');
+
+            if (photoSection) photoSection.style.display = lotoYes ? 'block' : 'none';
+
+            if (photoNotes) {
+
+                const photoNo = panel.querySelector('input[name="qcti-qp-photo"][value="no"]')?.checked;
+
+                photoNotes.style.display = (lotoYes && photoNo) ? 'block' : 'none';
+
+            }
+
+        }
+
+        panel.querySelectorAll('input[name="qcti-qp-loto"], input[name="qcti-qp-photo"]').forEach(r => r.addEventListener('change', updateQpPhotoVisibility));
+
         panel.querySelector('#qcti-qp-add-part').addEventListener('click', () => addPartRow(panel, 'qcti-qp-parts-list'));
 
         panel.querySelector('#qcti-qp-go').addEventListener('click', () => {
@@ -3999,6 +4041,18 @@ function initClosingCodesCascade(panel) {
             data.hoursWorked = hours;
 
             data.loto = panel.querySelector('input[name="qcti-qp-loto"]:checked').value;
+
+            data.photo = data.loto === 'yes' ? (panel.querySelector('input[name="qcti-qp-photo"]:checked')?.value || 'no') : 'no';
+
+            data.photoNotes = '';
+
+            if (data.loto === 'yes' && data.photo === 'no') {
+
+                data.photoNotes = panel.querySelector('#qcti-qp-photo-notes')?.value?.trim() || '';
+
+                if (!data.photoNotes) { showToast('❌ Photo notes required — explain why no photo was uploaded', 'error'); panel.querySelector('#qcti-qp-photo-notes')?.focus(); return; }
+
+            }
 
             data.partsUsed = panel.querySelector('input[name="qcti-qp-parts"]:checked').value === 'yes';
 
@@ -5945,7 +5999,7 @@ function initClosingCodesCascade(panel) {
 
             log('APM: Assigned To set to', login);
 
-            await waitForQuiet(Ext, 400, 5000);
+            await waitForQuiet(Ext, 200, 3000);
 
             // ─── STEP 6: Closing Comments ──────────────────────────────
 
@@ -6067,7 +6121,7 @@ function initClosingCodesCascade(panel) {
 
             await switchToRecordViewTab(Ext);
 
-            await waitForQuiet(Ext, 400, 5000);
+            await waitForQuiet(Ext, 200, 3000);
 
             // ─── STEP 12: Status → Completed ───────────────────────────
 
@@ -6162,17 +6216,17 @@ function initClosingCodesCascade(panel) {
 
         showToast('⏳ Checking for closing blurb dialog...', 'info');
 
-        // Poll up to 15s for the dialog window to appear
+        // Poll up to 8s for the dialog window to appear (100ms ticks — local DOM check)
 
         let found = null;
 
-        for (let i = 0; i < 50; i++) {
+        for (let i = 0; i < 80; i++) {
 
             found = findClosingBlurbWindow();
 
             if (found) break;
 
-            await delay(300);
+            await delay(100);
 
         }
 
@@ -6192,7 +6246,7 @@ function initClosingCodesCascade(panel) {
 
         showToast('⏳ Filling closing blurb (5W1H + 5 Whys)...', 'info');
 
-        await delay(300);
+        await delay(80);
 
         // ── FIELD DISCOVERY DUMP (logs every input's name + placeholder) ──
 
@@ -6242,7 +6296,7 @@ function initClosingCodesCascade(panel) {
 
                 log('APM: JAM auto-fill button clicked');
 
-                await waitForQuiet(Ext, 150, 3000); // auto-fill triggers Ajax — resolve when idle
+                await waitForQuiet(Ext, 100, 1500); // auto-fill triggers Ajax — resolve when idle
 
             } else {
 
@@ -6260,7 +6314,7 @@ function initClosingCodesCascade(panel) {
 
             await setBlurbComboByLabel(found.ext, dialogWin, 'parts', partsVal);
 
-            await waitForQuiet(Ext, 100, 2000); // combos settled
+            await waitForQuiet(Ext, 80, 1000); // combos settled
 
         } else {
 
@@ -6272,7 +6326,7 @@ function initClosingCodesCascade(panel) {
 
             await setBlurbComboByLabel(found.ext, dialogWin, 'parts', partsVal);
 
-            await waitForQuiet(Ext, 100, 2000); // combos settled
+            await waitForQuiet(Ext, 80, 1000); // combos settled
 
         }
 
@@ -6508,7 +6562,7 @@ function initClosingCodesCascade(panel) {
 
                 log('  Filled [' + item.ph + '] = "' + item.val + '"');
 
-                await delay(250);
+                await delay(60);
 
             } else {
 
@@ -6680,7 +6734,7 @@ function initClosingCodesCascade(panel) {
 
                     } catch (e) { warn('  Combo set failed [' + labelSub + ']: ' + e.message); }
 
-                    await delay(300);
+                    await delay(100);
 
                     return true;
 
