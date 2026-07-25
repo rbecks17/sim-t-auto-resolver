@@ -5961,7 +5961,7 @@ function initClosingCodesCascade(panel) {
 
             showToast('⏳ [3/13] Setting Equipment...', 'info');
 
-            await setLOVField(Ext, form, 'equipment', data.equipment, { skipStoreLoad: true });
+            await setLOVField(Ext, form, 'equipment', data.equipment, { skipStoreLoad: true, validateLOV: true });
 
             log('APM: Equipment set to', data.equipment);
 
@@ -7218,19 +7218,20 @@ function initClosingCodesCascade(panel) {
 
             // Mark pre-validated (APM Master: noLOVOnValidate + lastValidatedValue + validated)
             // This tells EAM the value is already valid — skips the LOV validation Ajax on blur.
-            if (opts.skipStoreLoad) {
+            // Don't mark pre-validated if validateLOV is set — those fields need real server validation.
+            if (opts.skipStoreLoad && !opts.validateLOV) {
                 field.noLOVOnValidate = true;
                 field.lastValidatedValue = value;
                 field.validated = true;
             }
 
             var validateOnChange = field.validateOnChange;
-            if (opts.skipStoreLoad) field.validateOnChange = false;
+            if (opts.skipStoreLoad && !opts.validateLOV) field.validateOnChange = false;
 
             try {
                 field.setValue(value);
             } finally {
-                if (opts.skipStoreLoad) field.validateOnChange = validateOnChange;
+                if (opts.skipStoreLoad && !opts.validateLOV) field.validateOnChange = validateOnChange;
             }
 
             const record = form.getRecord ? form.getRecord() : null;
@@ -7249,7 +7250,8 @@ function initClosingCodesCascade(panel) {
 
                 dom.dispatchEvent(new Event('change', { bubbles: true }));
 
-                if (!opts.skipStoreLoad) {
+                // Fire Tab unless skipStoreLoad WITHOUT validateLOV — equipment needs LOV validation
+                if (!opts.skipStoreLoad || opts.validateLOV) {
                     dom.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', keyCode: 9, which: 9, bubbles: true }));
                 }
                 dom.blur();
