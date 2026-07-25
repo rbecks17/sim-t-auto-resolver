@@ -6,7 +6,7 @@
 
 // @namespace    https://t.corp.amazon.com/
 
-// @version      1.35.1
+// @version      1.35.2
 
 // @description  Unified WO resolver — Quick Resolve (one-click template), Custom Resolve (popup form) and Jam Resolve (5W jam prompt). Consolidated: fully absorbs the former standalone SIM-T Jam Resolver (retired 2026-07-13). Handles SIM-T comment posting + full APM WO closure workflow.
 
